@@ -12,6 +12,9 @@ apt update && apt install -y python3 python3-pip git python3-rich python3-proxmo
 echo "Cloning the repository..."
 if [ ! -d "/opt/proxmox-gpu-manager" ]; then
     git clone https://github.com/RealBasharSafadi/proxmox-gpu-manager.git /opt/proxmox-gpu-manager
+else
+    echo "Repository already exists. Pulling latest updates..."
+    cd /opt/proxmox-gpu-manager && git pull origin main
 fi
 
 cd /opt/proxmox-gpu-manager
