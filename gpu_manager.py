@@ -9,27 +9,18 @@ from proxmoxer import ProxmoxAPI
 # Initialize Rich Console
 console = Console()
 
-# Configurations
-PROXMOX_HOST = "your-proxmox-ip"
+# Automatically detect Proxmox IP
+PROXMOX_HOST = subprocess.getoutput("hostname -I | awk '{print $1}'").strip()
 PROXMOX_USER = "root@pam"
-PROXMOX_PASSWORD = "your-password"
+PROXMOX_PASSWORD = "your-password"  # This should be securely handled
 CONFIG_FILE = "/opt/proxmox-gpu-manager/gpu_manager_config.json"
 
 def check_dependencies():
-    dependencies = ["python3", "pip3", "git"]
-    python_packages = ["rich", "proxmoxer"]
-    
+    dependencies = ["python3", "pip3", "git", "python3-rich", "python3-proxmoxer"]
     for dep in dependencies:
-        if subprocess.call(["which", dep], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+        if subprocess.call(["dpkg", "-s", dep], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
             console.print(f"[bold red]{dep} is missing. Installing...[/bold red]")
             os.system(f"apt install {dep} -y")
-    
-    for package in python_packages:
-        try:
-            __import__(package)
-        except ImportError:
-            console.print(f"[bold red]{package} is missing. Installing...[/bold red]")
-            os.system(f"pip3 install {package}")
 
 check_dependencies()
 
@@ -45,43 +36,55 @@ def load_config():
 
 def list_gpus():
     try:
-        output = subprocess.check_output("lspci -nn | grep -i 'VGA\|3D'", shell=True).decode()
-        gpus = [line.strip() for line in output.split("\n") if line]
+        output = subprocess.getoutput("lspci -nn | grep -i 'VGA\\|3D'")
+        gpus = [line.strip() for line in output.split("\\n") if line]
         return gpus
     except subprocess.CalledProcessError:
         return []
 
 def list_vms():
     proxmox = ProxmoxAPI(PROXMOX_HOST, user=PROXMOX_USER, password=PROXMOX_PASSWORD, verify_ssl=False)
-    vms = proxmox.nodes("pve").qemu.get()
-    return vms
+    return proxmox.nodes("pve").qemu.get()
 
 def assign_gpu(vmid, pci_id):
     conf_path = f"/etc/pve/qemu-server/{vmid}.conf"
-    with open(conf_path, "a") as f:
-        f.write(f"\nhostpci0: {pci_id},pcie=1\n")
-    os.system(f"qm set {vmid} --hostpci0 {pci_id},pcie=1")
-    console.print(f"[bold green]GPU {pci_id} assigned to VM {vmid}.[/bold green]")
+    if validate_pci_id(pci_id):
+        with open(conf_path, "a") as f:
+            f.write(f"\\nhostpci0: {pci_id},pcie=1\\n")
+        os.system(f"qm set {vmid} --hostpci0 {pci_id},pcie=1")
+        console.print(f"[bold green]GPU {pci_id} assigned to VM {vmid}.[/bold green]")
 
 def remove_gpu(vmid):
     conf_path = f"/etc/pve/qemu-server/{vmid}.conf"
-    with open(conf_path, "r") as f:
-        lines = f.readlines()
-    with open(conf_path, "w") as f:
-        for line in lines:
-            if not line.startswith("hostpci0"):
-                f.write(line)
-    os.system(f"qm set {vmid} --delete hostpci0")
-    console.print(f"[bold red]GPU removed from VM {vmid}.[/bold red]")
+    if os.path.exists(conf_path) and "hostpci0" in open(conf_path).read():
+        os.system(f"qm set {vmid} --delete hostpci0")
+        console.print(f"[bold red]GPU removed from VM {vmid}.[/bold red]")
+    else:
+        console.print(f"[yellow]No GPU assigned to VM {vmid}.[/yellow]")
+
+def validate_pci_id(pci_id):
+    output = subprocess.getoutput("lspci -nn")
+    if pci_id not in output:
+        console.print("[red]Invalid PCI ID![/red]")
+        return False
+    return True
 
 def unbind_gpu(pci_id):
-    os.system(f"echo {pci_id} > /sys/bus/pci/devices/{pci_id}/driver/unbind")
-    os.system("modprobe vfio-pci")
-    os.system(f"echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/bind")
-    console.print(f"[bold yellow]GPU {pci_id} unbound and assigned to vfio-pci.[/bold yellow]")
+    if validate_pci_id(pci_id):
+        os.system(f"echo {pci_id} > /sys/bus/pci/devices/{pci_id}/driver/unbind")
+        os.system("modprobe vfio-pci")
+        os.system(f"echo {pci_id} > /sys/bus/pci/drivers/vfio-pci/bind")
+        console.print(f"[bold yellow]GPU {pci_id} unbound and assigned to vfio-pci.[/bold yellow]")
+
+def check_nvidia_driver():
+    if subprocess.call("which nvidia-smi", shell=True) != 0:
+        console.print("[red]NVIDIA driver is missing! Install it before using monitoring.[/red]")
+        return False
+    return True
 
 def monitor_gpus():
-    os.system("nvidia-smi")
+    if check_nvidia_driver():
+        os.system("nvidia-smi")
 
 def main_menu():
     while True:
